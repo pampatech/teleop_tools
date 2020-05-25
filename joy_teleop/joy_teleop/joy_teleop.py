@@ -69,6 +69,7 @@ class JoyTeleop(Node):
         self.offline_services = []
 
         self.old_buttons = []
+        self.deadman_list = []
 
         self.retrieve_config()
 
@@ -120,6 +121,10 @@ class JoyTeleop(Node):
             for c in self.command_list:
                 if self.match_button_command(c, data.buttons) or self.match_axis_command(c, data.axes):
                     self.run_command(c, data)
+                else:
+                    if (c in self.deadman_list):
+                        self.run_command(c, None)
+                        self.deadman_list.remove(c)
         except JoyTeleopException as e:
             self.get_logger().error('error while parsing joystick input: %s', str(e))
         self.old_buttons = data.buttons
@@ -128,8 +133,10 @@ class JoyTeleop(Node):
         """Add a topic publisher for a joystick command."""
         topic_name = command['topic_name']
         try:
-            topic_type = self.get_interface_type(command['interface_type'], '.msg')
-            self.pubs[topic_name] = self.create_publisher(topic_type, topic_name, 1)
+            topic_type = self.get_interface_type(
+                command['interface_type'], '.msg')
+            self.pubs[topic_name] = self.create_publisher(
+                topic_type, topic_name, 1)
         except JoyTeleopException as e:
             self.get_logger().error(
                 'could not register topic for command {}: {}'.format(name, str(e)))
@@ -138,8 +145,10 @@ class JoyTeleop(Node):
         """Add an action client for a joystick command."""
         action_name = command['action_name']
         if action_name not in self.al_clients:
-            action_type = self.get_interface_type(command['interface_type'], '.action')
-            self.al_clients[action_name] = ActionClient(self, action_type, action_name)
+            action_type = self.get_interface_type(
+                command['interface_type'], '.action')
+            self.al_clients[action_name] = ActionClient(
+                self, action_type, action_name)
 
         if self.al_clients[action_name].server_is_ready():
             if action_name in self.offline_actions:
@@ -153,9 +162,11 @@ class JoyTeleop(Node):
     class AsyncServiceProxy(object):
 
         def __init__(self, node, service_name, service_type):
-            self._service_client = node.create_client(service_type, service_name)
+            self._service_client = node.create_client(
+                service_type, service_name)
             if not self._service_client.wait_for_service(timeout_sec=1.0):
-                raise JoyTeleopException('Service {} is not available'.format(service_name))
+                raise JoyTeleopException(
+                    'Service {} is not available'.format(service_name))
 
         def __call__(self, request):
             self._service_client.call_async(request)
@@ -165,7 +176,8 @@ class JoyTeleop(Node):
         """Add an AsyncServiceProxy for a joystick command."""
         service_name = command['service_name']
         try:
-            service_type = self.get_interface_type(command['interface_type'], '.srv')
+            service_type = self.get_interface_type(
+                command['interface_type'], '.srv')
             self.srv_clients[service_name] = self.AsyncServiceProxy(
                 self,
                 service_name,
@@ -248,37 +260,46 @@ class JoyTeleop(Node):
         cmd = self.command_list[c]
         msg = self.get_interface_type(cmd['interface_type'], '.msg')()
 
-        if 'message_value' in cmd:
-            if cmd['message_value'] is not None:
-                for target, param in cmd['message_value'].items():
-                    self.set_member(msg, target, param['value'])
+        # when None deadman kicks in, send a default (zeroed) message
+        if joy_state is not None:
 
-        else:
-            for mapping, values in cmd['axis_mappings'].items():
-                if 'axis' in values:
-                    if len(joy_state.axes) > values['axis']:
-                        val = joy_state.axes[values['axis']] * values.get('scale', 1.0) + \
-                            values.get('offset', 0.0)
-                    else:
-                        self.get_logger().error('Joystick has only {} axes (indexed from 0),'
-                                                'but #{} was referenced in config.'.format(
-                                                    len(joy_state.axes), values['axis']))
-                        val = 0.0
-                elif 'button' in values:
-                    if len(joy_state.buttons) > values['button']:
-                        val = joy_state.buttons[values['button']] * values.get('scale', 1.0) + \
-                            values.get('offset', 0.0)
-                    else:
-                        self.get_logger().error('Joystick has only {} buttons (indexed from 0),'
-                                                'but #{} was referenced in config.'.format(
-                                                    len(joy_state.buttons), values['button']))
-                        val = 0.0
-                else:
-                    self.get_logger().error(
-                        'No Supported axis_mappings type found in: {}'.format(mapping))
-                    val = 0.0
+            # setup a deadman pending, if this topic type had defined deadman
+            # _buttons (instead of just buttons)
+            if len(cmd['deadman_buttons']) > 0:
+                if (c not in self.deadman_list):
+                    self.deadman_list.append(c)
 
-                self.set_member(msg, mapping, val)
+            if 'message_value' in cmd:
+                if cmd['message_value'] is not None:
+                    for target, param in cmd['message_value'].items():
+                        self.set_member(msg, target, param['value'])
+
+            else:
+                for mapping, values in cmd['axis_mappings'].items():
+                    if 'axis' in values:
+                        if len(joy_state.axes) > values['axis']:
+                            val = joy_state.axes[values['axis']] * values.get('scale', 1.0) + \
+                                values.get('offset', 0.0)
+                        else:
+                            self.get_logger().error('Joystick has only {} axes (indexed from 0),'
+                                                    'but #{} was referenced in config.'.format(
+                                                        len(joy_state.axes), values['axis']))
+                            val = 0.0
+                    elif 'button' in values:
+                        if len(joy_state.buttons) > values['button']:
+                            val = joy_state.buttons[values['button']] * values.get('scale', 1.0) + \
+                                values.get('offset', 0.0)
+                        else:
+                            self.get_logger().error('Joystick has only {} buttons (indexed from 0),'
+                                                    'but #{} was referenced in config.'.format(
+                                                        len(joy_state.buttons), values['button']))
+                            val = 0.0
+                    else:
+                        self.get_logger().error(
+                            'No Supported axis_mappings type found in: {}'.format(mapping))
+                        val = 0.0
+
+                    self.set_member(msg, mapping, val)
 
         # If there is a stamp field, fill it with rospy.Time.now()
         if hasattr(msg, 'header'):
@@ -297,7 +318,8 @@ class JoyTeleop(Node):
 
     def run_service(self, c, joy_state):
         cmd = self.command_list[c]
-        request = self.get_interface_type(cmd['interface_type'], '.srv').Request()
+        request = self.get_interface_type(
+            cmd['interface_type'], '.srv').Request()
         for target, value in cmd['service_request'].items():
             set_message_fields(request, {target: value})
         if not self.srv_clients[cmd['service_name']](request):
@@ -322,7 +344,8 @@ class JoyTeleop(Node):
             except ValueError:
                 raise JoyTeleopException('message type format error')
             except ImportError:
-                raise JoyTeleopException('module {} could not be loaded'.format(package))
+                raise JoyTeleopException(
+                    'module {} could not be loaded'.format(package))
             except AttributeError:
                 raise JoyTeleopException(
                     'message {} could not be loaded from module {}'.format(package, message))
